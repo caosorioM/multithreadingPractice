@@ -18,8 +18,8 @@ function(AddCoverage target)
         COMMAND ${LCOV_PATH} -d . --zerocounters
         COMMAND $<TARGET_FILE:${target}>
         COMMAND ${LCOV_PATH} -r coverage.info '/usr/include/*' -o filtered.info
-        COMMAND ${GENHTML_PATH -o coverage-${target} filtered.info --legend
+        COMMAND ${GENHTML_PATH} -o coverage-${target} filtered.info --legend
         COMMAND rm -rf coverage.info filtered.info
-        WORKING_DIRECTORY ${CMAKE_BINARY_DIR} }
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR} 
         )
 endfunction()
