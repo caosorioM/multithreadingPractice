@@ -2,4 +2,3 @@ add_executable(mutithreading_test multithreadingTest.cpp)
 
 target_link_libraries(mutithreading_test PRIVATE multithreading_header_only)
 AddTests(mutithreading_test)
-#EnableCoverage(multithreading_header_only)

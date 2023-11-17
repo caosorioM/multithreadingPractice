@@ -10,7 +10,7 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 option(INSTALL_GMOCK "Install GMock" ON)
 option(INSTALL_GTEST "Install GTest" ON)
-
+ 
 FetchContent_MakeAvailable(googleTest)
 
 include(GoogleTest)
