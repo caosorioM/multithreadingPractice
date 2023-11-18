@@ -3,7 +3,7 @@ include(FetchContent)
 FetchContent_Declare(
     benchmark
     GIT_REPOSITORY  https://github.com/google/benchmark.git
-    GIT_TAG         main
+    GIT_TAG         maingit
 )
 
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
