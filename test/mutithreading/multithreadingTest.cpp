@@ -25,5 +25,7 @@ TEST(locks , spinlock)
         });
     }
 
+    std::for_each(threads.begin() , threads.end() , [](std::thread & t){ t.join();});
+
     EXPECT_EQ(count , numberOfThreads );
 }
