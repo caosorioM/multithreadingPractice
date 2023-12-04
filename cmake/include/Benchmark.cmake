@@ -3,11 +3,12 @@ include(FetchContent)
 FetchContent_Declare(
     benchmark
     GIT_REPOSITORY  https://github.com/google/benchmark.git
-    GIT_TAG         maingit
+    GIT_TAG         main
 )
+set(benchmark_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(benchmark)
 
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
-macro(LinkBechmark target)
-    target_link_directories(target benchmark::benchmark)
+macro(add_bechmark target)
+    target_link_libraries(${target} PRIVATE benchmark::benchmark_main)
 endmacro()
