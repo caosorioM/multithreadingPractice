@@ -3,34 +3,35 @@
 #include<random>
 #include<thread>
 
-class rng
-{
-public:
-    thread_local static  std::default_random_engine  _engine;
-};
 
 template< typename distribution>
-auto  GenerateNumber(const distribution& dist)
+auto  GenerateNumber(distribution& dist)
 {
-    thread_local static  std::default_random_engine  engine(1639);
+    thread_local static  std::random_device rd;
+    thread_local static  std::default_random_engine  engine(rd());
+
     return dist(engine);
 
 }
 
-template< class unit, unit MIN , unit MAX >
+template< class unit, int MIN , int MAX >
 class backOff
 {
 public:
 
-   backOff():_limit(max)
+   backOff():_limit(MIN)
    {
    };
 
-   std::chrono::duration<double, std::micro>   GetBackoff()
+   void  sleep()
    {
-        
+        int delay =  GenerateNumber(_dist)%_limit; 
+        _limit = std::min(2*_limit , MAX);
+
+        std::this_thread::sleep_for( unit(delay) );
    }
 
 private:
-    unit _limit;
+    int _limit;
+    std::uniform_int_distribution<> _dist = std::uniform_int_distribution<>(MIN , MAX);
 };
