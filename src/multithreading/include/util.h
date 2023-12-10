@@ -35,3 +35,20 @@ private:
     int _limit;
     std::uniform_int_distribution<> _dist = std::uniform_int_distribution<>(MIN , MAX);
 };
+
+
+class timer 
+{
+    timer()
+    {
+        _start = std::chrono::system_clock::now();
+    }
+
+    template<typename unit>
+    auto getTimeDiff()
+    {
+        return std::chrono::duration_cast<unit>(std::chrono::system_clock::now() - _start); 
+    }
+private:
+    decltype( std::chrono::system_clock::now()) _start;
+};

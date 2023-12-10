@@ -75,6 +75,8 @@
         "complex": "cpp",
         "regex": "cpp",
         "cfenv": "cpp",
-        "__nullptr": "cpp"
+        "__nullptr": "cpp",
+        "__config": "cpp",
+        "__node_handle": "cpp"
     }
 }

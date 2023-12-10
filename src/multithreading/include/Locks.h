@@ -2,6 +2,8 @@
 #include <atomic>
 #include "util.h"
 #include <bitset>
+#include <array>
+#include "nodeArrays.h"
 
 class spinlock
 {
@@ -110,4 +112,272 @@ private:
     flag                       _array[MAX_THREADS];
     static thread_local size_t _slot;
     std::atomic<size_t>        _current; 
+};
+
+class CLHLock
+{
+public:
+
+void lock()
+{
+    _currentNode->_locked.store(true, std::memory_order_relaxed);
+    _predecesor = _tail.exchange(_currentNode, std::memory_order_release);
+
+    while(_predecesor->_locked.load(std::memory_order_acquire)){}
+}
+
+void unlock()
+{
+    _currentNode->_locked.store(false, std::memory_order_release);
+    _currentNode = _predecesor;
+}
+
+struct node
+{
+    node*              _predecesor;
+    std::atomic<bool>  _locked;
+};
+private:
+std::atomic<node*>  _tail;
+static thread_local node*  _currentNode;
+static thread_local node*  _predecesor;
+};
+
+
+class MCSLock
+{
+public:
+    void lock()
+    {
+        auto predecesor = _tail.exchange(&_myNode , std::memory_order_relaxed);
+
+        if(predecesor)
+        {
+            _myNode.locked.store(true , std::memory_order_relaxed);
+            predecesor->succesor.store(&_myNode , std::memory_order_release);
+
+            while(!_myNode.locked.load(std::memory_order_acquire)){}
+        }
+    }
+
+    void unlock()
+    {
+        auto succesor = _myNode.succesor.load(std::memory_order_relaxed);
+
+        if(!succesor)
+        {
+            auto pMyNode = &_myNode;
+            if(_tail.compare_exchange_strong( pMyNode , nullptr ,std::memory_order_release , std::memory_order_relaxed))
+            {
+                return;
+            }
+
+            while(succesor =_myNode.succesor.load(std::memory_order_acquire)){}
+        }
+
+        succesor->locked.store(false, std::memory_order_release);
+    }
+
+private:
+struct node
+{
+    std::atomic<node*> succesor;
+    std::atomic<bool>  locked;
+};
+
+std::atomic<node*>       _tail;
+static thread_local node _myNode;
+};
+
+
+class ToLock
+{
+public:
+    void lock()
+    {
+        auto predecesor = _tail.exchange(&_myNode);
+
+        if(predecesor == nullptr || predecesor->predecesor.load() == &AVAILABLE)
+            return;
+
+        timer t; 
+
+        while(t.getTimeDiff<std::chrono::microseconds>() < _patience)
+        {
+            auto predecesorPredecesor = predecesor->predecesor.load();
+
+            if(predecesorPredecesor == &AVAILABLE)
+                return;
+
+            if(predecesorPredecesor)
+            {
+                _myNode.predecesor.store(predecesorPredecesor);
+            }
+        }
+
+        auto pMyNode = &_myNode;
+        if(!_tail.compare_exchange_strong(pMyNode , nullptr))
+        {
+            pMyNode->predecesor.store(predecesor);
+        }
+    }
+
+    void unlock()
+    {
+        auto pMyNode = &_myNode;
+        if(!_tail.compare_exchange_strong(pMyNode ,  nullptr))
+            _myNode.predecesor.store(&AVAILABLE);
+    }
+
+private:
+    struct node
+    {
+        std::atomic<node*> predecesor;
+    };
+    static thread_local node _myNode;
+    static node AVAILABLE;
+
+    std::atomic<node*> _tail;
+
+    std::chrono::microseconds _patience;
+};
+
+class compositeLock
+{
+public:
+    bool trylock()
+    {
+        timer t;
+        node* pNode =  ClaimNode( t);
+
+        if(!pNode)
+            return false;
+
+        if(!QueueNode(t , pNode) )
+            return false;
+
+        if(!WaitInQueue(t, pNode))
+            return false;
+
+        return true;
+    }
+
+    void unlock()
+    {
+        _myNode->_state.store(RELEASED);
+        _myNode = nullptr;
+    }
+
+private:
+    enum state {FREE , WAITING , RELEASED , ABORTED};
+    struct node
+    {
+        std::atomic<state> _state;
+        std::atomic<node*> _predecesor;
+    };
+
+
+    node* ClaimNode( timer& t)
+    {
+        auto nodeIndex = GenerateNumber(_dist);
+        auto currentNode = _nodeArray.GetNode(nodeIndex);
+        state currentState = FREE;
+
+        if(currentNode->_state.compare_exchange_strong(currentState , WAITING))
+            return currentNode;
+
+        backOff<std::chrono::microseconds , 1, 100 > theBackOff;
+
+        while(true)
+        {
+            auto currentTail = _tail.load();
+       
+            if(currentState == ABORTED || currentState == RELEASED)
+            {
+                if(currentNode == _nodeArray.GetNode(currentTail) )
+                {
+                    node* myPred = nullptr;
+
+                    if(currentNode->_state.load() == ABORTED)
+                    {
+                        myPred = currentNode->_predecesor.load();
+                    }
+
+                    if(_tail.compare_exchange_strong(currentTail , CreateNextTag(currentTail , myPred) ))
+                    {
+                        currentNode->_state.store(WAITING);
+                        return currentNode;
+                    }
+                }
+            }
+        }
+
+        theBackOff.sleep();
+
+        if(t.getTimeDiff<std::chrono::microseconds>() > _patience)
+            return nullptr;
+    }
+
+    bool QueueNode(timer& t , node* pNode)
+    {
+        auto currentTail = _tail.load();
+        nodeTag nextTail;
+
+        do
+        {
+            if(t.getTimeDiff<std::chrono::microseconds>() > _patience)
+            {
+                pNode->_state.store(FREE);
+                return false;
+            }
+
+            nextTail = CreateNextTag( currentTail , pNode);
+        }
+        while(_tail.compare_exchange_strong(currentTail , nextTail));
+
+        pNode->_predecesor.store(_nodeArray.GetNode(currentTail));
+        return true;
+    }
+
+    bool WaitInQueue(timer& t, node* pNode)
+    {
+       auto predecesor = _myNode->_predecesor.load();
+
+        if( !predecesor )
+        {
+            _myNode = pNode;
+            return true;
+        }
+
+       auto predcesorState = predecesor->_state.load();
+
+       while(predcesorState != RELEASED)
+       {
+          if(predcesorState == ABORTED)
+          {
+            auto oldPredecesor = predecesor;
+            predecesor = predecesor->_predecesor.load();
+            predecesor->_state.store(FREE);
+          }
+
+          if(t.getTimeDiff<std::chrono::microseconds>() > _patience)
+          {
+            pNode->_state.store(ABORTED);
+            return false;
+          }
+
+          predcesorState = predecesor->_state.load();
+       }
+
+        _myNode = pNode;
+        predecesor->_state.store(FREE);
+    }
+
+    std::atomic<nodeTag> _tail;
+
+    std::chrono::duration<std::micro> _patience;
+
+    node* _myNode;
+    stampedNodesArray<node , 10> _nodeArray;
+    std::uniform_int_distribution<uint32_t> _dist;
 };
