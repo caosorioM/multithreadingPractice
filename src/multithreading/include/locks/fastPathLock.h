@@ -264,7 +264,7 @@ public:
 
     void unlock()
     {
-        _myNode->_state.store(RELEASED);
+        _myNode->_state.store(RELEASED, std::memory_order_release);
         _myNode = nullptr;
     }
 
@@ -283,14 +283,17 @@ private:
         auto currentNode = _nodeArray.GetNode(nodeIndex);
         state currentState = FREE;
 
-        if(currentNode->_state.compare_exchange_strong(currentState , WAITING))
+        if(currentNode->_state.compare_exchange_strong(currentState , WAITING , 
+                                                        std::memory_order_relaxed ,std::memory_order_relaxed))
+        {
             return currentNode;
+        }
 
         backOff<std::chrono::microseconds , 1, 100 > theBackOff;
 
         while(true)
         {
-            auto currentTail = _tail.load();
+            auto currentTail = _tail.load(std::memory_order_relaxed);
        
             if(currentState == ABORTED || currentState == RELEASED)
             {
@@ -298,14 +301,15 @@ private:
                 {
                     node* myPred = nullptr;
 
-                    if(currentNode->_state.load() == ABORTED)
+                    if(currentNode->_state.load(std::memory_order_relaxed) == ABORTED)
                     {
-                        myPred = currentNode->_predecesor.load();
+                        myPred = currentNode->_predecesor.load(std::memory_order_relaxed);
                     }
 
-                    if(_tail.compare_exchange_strong(currentTail , CreateNextTag(currentTail , myPred) ))
+                    if(_tail.compare_exchange_strong(currentTail , CreateNextTag(currentTail , myPred) 
+                                                                 , std::memory_order_relaxed ,  std::memory_order_relaxed ))
                     {
-                        currentNode->_state.store(WAITING);
+                        currentNode->_state.store(WAITING , std::memory_order_relaxed);
                         return currentNode;
                     }
                 }
@@ -320,20 +324,20 @@ private:
 
     bool QueueNode(timer& t , node* pNode)
     {
-        auto currentTail = _tail.load();
+        auto currentTail = _tail.load(std::memory_order_relaxed);
         nodeTag nextTail;
 
         do
         {
             if(t.getTimeDiff<std::chrono::microseconds>() > _patience)
             {
-                pNode->_state.store(FREE);
+                pNode->_state.store(FREE , std::memory_order_relaxed);
                 return false;
             }
 
             nextTail = CreateNextTag( currentTail , pNode);
         }
-        while(_tail.compare_exchange_strong(currentTail , nextTail));
+        while(_tail.compare_exchange_strong(currentTail , nextTail , std::memory_order_release, std::memory_order_relaxed));
 
         pNode->_predecesor.store(_nodeArray.GetNode(currentTail));
         return true;
@@ -341,7 +345,7 @@ private:
 
     bool WaitInQueue(timer& t, node* pNode)
     {
-       auto predecesor = _myNode->_predecesor.load();
+       auto predecesor = _myNode->_predecesor.load(std::memory_order_acquire);
 
         if( !predecesor )
         {
@@ -349,28 +353,28 @@ private:
             return true;
         }
 
-       auto predcesorState = predecesor->_state.load();
+       auto predcesorState = predecesor->_state.load(std::memory_order_acquire);
 
        while(predcesorState != RELEASED)
        {
           if(predcesorState == ABORTED)
           {
             auto oldPredecesor = predecesor;
-            predecesor = predecesor->_predecesor.load();
-            predecesor->_state.store(FREE);
+            predecesor = predecesor->_predecesor.load(std::memory_order_relaxed);
+            predecesor->_state.store(FREE, std::memory_order_release);
           }
 
           if(t.getTimeDiff<std::chrono::microseconds>() > _patience)
           {
-            pNode->_state.store(ABORTED);
+            pNode->_state.store(ABORTED, std::memory_order_relaxed);
             return false;
           }
 
-          predcesorState = predecesor->_state.load();
+          predcesorState = predecesor->_state.load(std::memory_order_acquire);
        }
 
         _myNode = pNode;
-        predecesor->_state.store(FREE);
+        predecesor->_state.store(FREE , std::memory_order_relaxed);
     }
 
     std::atomic<nodeTag> _tail;
@@ -380,4 +384,71 @@ private:
     node* _myNode;
     stampedNodesArray<node , 10> _nodeArray;
     std::uniform_int_distribution<uint32_t> _dist;
+};
+
+
+class fastPathLock
+{
+public:
+
+    bool tryLock()
+    {
+        if(fastPath())
+            return true;
+
+        if(_lock.trylock() )
+        {
+            while(IsFastPathEnabled(_tail.load())){}
+
+            return true;
+        }
+
+        return false;
+    }
+
+    void unlock()
+    {
+        if(!unlockFastPath())
+        {
+            _lock.unlock();
+        }
+    }
+
+private:
+    bool fastPath()
+    {
+        auto currentTail = _tail.load();
+
+        if(!IsNull(currentTail))
+            return false;
+
+        if(!IsFastPathEnabled(currentTail))
+            return false;
+
+
+        return _tail.compare_exchange_strong(currentTail , EnableFastPath(currentTail));
+
+    }
+
+    bool unlockFastPath()
+    {
+        auto currentTail = _tail.load();
+
+        if(!IsFastPathEnabled(currentTail) )
+            return currentTail;
+
+        nodeTag newTail;
+        do
+        {
+           newTail = DisableFastPath(currentTail);
+        } while (!_tail.compare_exchange_strong(currentTail , newTail) );
+        
+        return true;
+    }
+
+    bool IsFastPathLocked(nodeTag tag);
+    nodeTag enableFastPath(nodeTag tag);
+
+    compositeLock _lock;
+    std::atomic<nodeTag> _tail;
 };
